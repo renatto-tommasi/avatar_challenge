@@ -1,0 +1,424 @@
+# ---------------------------------------------------------------------------
+# Single-stroke ("monoline") capital alphabet for the word_writer node.
+#
+# What this file is
+# -----------------
+# A font. Each glyph is a list of *strokes*, and one stroke is one pen-down
+# outline — exactly the geometry an avatar_challenge/msg/Shape carries. The node
+# turns each stroke into a Shape and each letter into one ShapeArray, so a
+# letter drawn with three strokes (B, E, H ...) is three shapes in one batch and
+# the arm lifts the pen between them.
+#
+# Design grid
+# -----------
+# Glyphs are drawn in a design box with the baseline at y = 0 and the cap line
+# at y = `cap_height`, x growing to the right. Everything in this file is in
+# those design units and is divided by `cap_height` at load time, so the font is
+# resolution-free: the node scales it by its `letter_height` parameter (metres
+# per cap height) and nothing here has to change.
+#
+# The glyphs are geometric: round letters are true circles of radius 50 (i.e.
+# half the cap height), bowls are circular, and nothing is a hand-fitted
+# polygon approximating a curve. That is deliberate — the tracer samples arcs
+# and circles exactly, so a real arc draws better than a 20-segment polyline.
+#
+# Stroke syntax
+# -------------
+# Either a polyline:
+#
+#     - polyline: [[0, 0], [36, 100], [72, 0]]
+#
+# or a primitive path, which uses the same vocabulary as config/shapes.yaml:
+#
+#     - start: [0, 100]                        # optional if the first segment
+#       closed: false                          #   is an angle-defined arc/circle
+#       segments:
+#         - {type: line, to: [36, 100]}
+#         - {type: arc, center: [36, 75], radius: 25,
+#            start_angle: 90, end_angle: -90, direction: cw}
+#         - {type: circle, center: [50, 50], radius: 50, direction: ccw}
+#         - {type: bspline, control_points: [[..]], degree: 3, periodic: false}
+#
+# Arcs may be given the way shapes.yaml gives them (`to:` plus `center:` or
+# `radius:`), but the `start_angle`/`end_angle` form is what this file uses: the
+# endpoints are then computed from the circle instead of typed in, so they land
+# on it exactly. That matters — the sampler rejects a centre-defined arc whose
+# endpoints disagree about the radius by more than 0.1 mm, which is easy to do
+# by hand and impossible to do this way. Angles are degrees, counter-clockwise
+# from +x, and `direction` decides which way round the circle the pen travels.
+#
+# Metrics
+# -------
+# `advance` is the glyph's own width; the gap between two glyphs is the global
+# `letter_spacing`, so tracking is tuned in one place. Glyphs all start at x = 0
+# and carry no left side bearing of their own.
+# ---------------------------------------------------------------------------
+
+font:
+  name: monoline_caps
+  # Design units per cap height. Every coordinate below is divided by this.
+  cap_height: 100.0
+  # Lowest ink in the font (Q's tail, the comma), in design units. The layout
+  # uses it to decide whether one more line still fits above the floor of the
+  # writing area.
+  descender: -16.0
+  # Advance of the space character and of any glyph that omits `advance`.
+  space_advance: 46.0
+  default_advance: 70.0
+  # Gap inserted between two adjacent glyphs, and baseline-to-baseline distance
+  # between two lines of text.
+  letter_spacing: 16.0
+  line_spacing: 165.0
+  # Input is folded to upper case before lookup, so "Hello" and "HELLO" draw the
+  # same glyphs. Set false to make lower-case letters unknown characters instead.
+  case_fold_upper: true
+
+glyphs:
+  "A":
+    advance: 72.0
+    strokes:
+      - polyline: [[0.0, 0.0], [36.0, 100.0], [72.0, 0.0]]
+      # The crossbar ends exactly on the diagonals: at y = 35 they sit at
+      # x = 36 * 0.35 and 72 - 36 * 0.35.
+      - polyline: [[12.6, 35.0], [59.4, 35.0]]
+
+  "B":
+    advance: 55.0
+    strokes:
+      - polyline: [[0.0, 0.0], [0.0, 100.0]]
+      - start: [0.0, 100.0]
+        segments:
+          - {type: line, to: [28.0, 100.0]}
+          - {type: arc, center: [28.0, 75.0], radius: 25.0,
+             start_angle: 90.0, end_angle: -90.0, direction: cw}
+          - {type: line, to: [0.0, 50.0]}
+      # The lower bowl is a shade wider than the upper one, which is what keeps
+      # a B from looking top-heavy.
+      - start: [0.0, 50.0]
+        segments:
+          - {type: line, to: [30.0, 50.0]}
+          - {type: arc, center: [30.0, 25.0], radius: 25.0,
+             start_angle: 90.0, end_angle: -90.0, direction: cw}
+          - {type: line, to: [0.0, 0.0]}
+
+  "C":
+    advance: 96.0
+    strokes:
+      - segments:
+          - {type: arc, center: [50.0, 50.0], radius: 50.0,
+             start_angle: 40.0, end_angle: 320.0, direction: ccw}
+
+  "D":
+    advance: 75.0
+    strokes:
+      - polyline: [[0.0, 0.0], [0.0, 100.0]]
+      - start: [0.0, 100.0]
+        segments:
+          - {type: line, to: [25.0, 100.0]}
+          - {type: arc, center: [25.0, 50.0], radius: 50.0,
+             start_angle: 90.0, end_angle: -90.0, direction: cw}
+          - {type: line, to: [0.0, 0.0]}
+
+  "E":
+    advance: 62.0
+    strokes:
+      - polyline: [[62.0, 100.0], [0.0, 100.0], [0.0, 0.0], [62.0, 0.0]]
+      - polyline: [[0.0, 50.0], [52.0, 50.0]]
+
+  "F":
+    advance: 62.0
+    strokes:
+      - polyline: [[62.0, 100.0], [0.0, 100.0], [0.0, 0.0]]
+      - polyline: [[0.0, 50.0], [52.0, 50.0]]
+
+  "G":
+    advance: 100.0
+    strokes:
+      # C's arc carried a little further round, then the bar back to the middle.
+      - segments:
+          - {type: arc, center: [50.0, 50.0], radius: 50.0,
+             start_angle: 40.0, end_angle: -30.0, direction: ccw}
+          - {type: line, to: [93.3, 50.0]}
+          - {type: line, to: [58.0, 50.0]}
+
+  "H":
+    advance: 68.0
+    strokes:
+      - polyline: [[0.0, 0.0], [0.0, 100.0]]
+      - polyline: [[68.0, 0.0], [68.0, 100.0]]
+      - polyline: [[0.0, 50.0], [68.0, 50.0]]
+
+  "I":
+    advance: 6.0
+    strokes:
+      - polyline: [[3.0, 0.0], [3.0, 100.0]]
+
+  "J":
+    advance: 50.0
+    strokes:
+      - start: [50.0, 100.0]
+        segments:
+          - {type: line, to: [50.0, 25.0]}
+          - {type: arc, center: [25.0, 25.0], radius: 25.0,
+             start_angle: 0.0, end_angle: 180.0, direction: cw}
+
+  "K":
+    advance: 66.0
+    strokes:
+      - polyline: [[0.0, 0.0], [0.0, 100.0]]
+      # Both diagonals in one stroke, meeting the stem just above mid-height.
+      - polyline: [[64.0, 100.0], [2.0, 44.0], [66.0, 0.0]]
+
+  "L":
+    advance: 60.0
+    strokes:
+      - polyline: [[0.0, 100.0], [0.0, 0.0], [60.0, 0.0]]
+
+  "M":
+    advance: 80.0
+    strokes:
+      - polyline: [[0.0, 0.0], [0.0, 100.0], [40.0, 25.0], [80.0, 100.0], [80.0, 0.0]]
+
+  "N":
+    advance: 68.0
+    strokes:
+      - polyline: [[0.0, 0.0], [0.0, 100.0], [68.0, 0.0], [68.0, 100.0]]
+
+  "O":
+    advance: 100.0
+    strokes:
+      - segments:
+          - {type: circle, center: [50.0, 50.0], radius: 50.0, direction: ccw}
+
+  "P":
+    advance: 52.0
+    strokes:
+      - polyline: [[0.0, 0.0], [0.0, 100.0]]
+      - start: [0.0, 100.0]
+        segments:
+          - {type: line, to: [24.0, 100.0]}
+          - {type: arc, center: [24.0, 72.0], radius: 28.0,
+             start_angle: 90.0, end_angle: -90.0, direction: cw}
+          - {type: line, to: [0.0, 44.0]}
+
+  "Q":
+    advance: 100.0
+    strokes:
+      - segments:
+          - {type: circle, center: [50.0, 50.0], radius: 50.0, direction: ccw}
+      # The tail starts inside the bowl so the two strokes visibly meet.
+      - polyline: [[68.0, 32.0], [100.0, 0.0]]
+
+  "R":
+    advance: 58.0
+    strokes:
+      - polyline: [[0.0, 0.0], [0.0, 100.0]]
+      - start: [0.0, 100.0]
+        segments:
+          - {type: line, to: [24.0, 100.0]}
+          - {type: arc, center: [24.0, 72.0], radius: 28.0,
+             start_angle: 90.0, end_angle: -90.0, direction: cw}
+          - {type: line, to: [0.0, 44.0]}
+      - polyline: [[22.0, 44.0], [58.0, 0.0]]
+
+  "S":
+    advance: 50.0
+    strokes:
+      # Two arcs that meet at (24, 52) with a shared horizontal tangent, so the
+      # spine flows through the waist instead of kinking at it. The lower bowl
+      # is the larger of the two, as it should be.
+      - segments:
+          - {type: arc, center: [24.0, 76.0], radius: 24.0,
+             start_angle: 45.0, end_angle: 270.0, direction: ccw}
+          - {type: arc, center: [24.0, 26.0], radius: 26.0,
+             start_angle: 90.0, end_angle: 225.0, direction: cw}
+
+  "T":
+    advance: 68.0
+    strokes:
+      - polyline: [[0.0, 100.0], [68.0, 100.0]]
+      - polyline: [[34.0, 100.0], [34.0, 0.0]]
+
+  "U":
+    advance: 68.0
+    strokes:
+      - start: [0.0, 100.0]
+        segments:
+          - {type: line, to: [0.0, 34.0]}
+          - {type: arc, center: [34.0, 34.0], radius: 34.0,
+             start_angle: 180.0, end_angle: 0.0, direction: ccw}
+          - {type: line, to: [68.0, 100.0]}
+
+  "V":
+    advance: 68.0
+    strokes:
+      - polyline: [[0.0, 100.0], [34.0, 0.0], [68.0, 100.0]]
+
+  "W":
+    advance: 92.0
+    strokes:
+      - polyline: [[0.0, 100.0], [20.0, 0.0], [46.0, 72.0], [72.0, 0.0], [92.0, 100.0]]
+
+  "X":
+    advance: 68.0
+    strokes:
+      - polyline: [[0.0, 0.0], [68.0, 100.0]]
+      - polyline: [[0.0, 100.0], [68.0, 0.0]]
+
+  "Y":
+    advance: 68.0
+    strokes:
+      - polyline: [[0.0, 100.0], [34.0, 52.0], [68.0, 100.0]]
+      - polyline: [[34.0, 52.0], [34.0, 0.0]]
+
+  "Z":
+    advance: 64.0
+    strokes:
+      - polyline: [[0.0, 100.0], [64.0, 100.0], [0.0, 0.0], [64.0, 0.0]]
+
+  # --- digits --------------------------------------------------------------
+  # Not letters, but a word_writer that cannot write "ROOM 3" is annoying.
+
+  "0":
+    advance: 54.0
+    strokes:
+      - start: [0.0, 27.0]
+        segments:
+          - {type: line, to: [0.0, 73.0]}
+          - {type: arc, center: [27.0, 73.0], radius: 27.0,
+             start_angle: 180.0, end_angle: 0.0, direction: cw}
+          - {type: line, to: [54.0, 27.0]}
+          - {type: arc, center: [27.0, 27.0], radius: 27.0,
+             start_angle: 0.0, end_angle: 180.0, direction: cw}
+
+  "1":
+    advance: 36.0
+    strokes:
+      - polyline: [[4.0, 80.0], [28.0, 100.0], [28.0, 0.0]]
+
+  "2":
+    advance: 56.0
+    strokes:
+      - segments:
+          - {type: arc, center: [27.0, 73.0], radius: 27.0,
+             start_angle: 160.0, end_angle: -20.0, direction: cw}
+          - {type: line, to: [0.0, 0.0]}
+          - {type: line, to: [56.0, 0.0]}
+
+  "3":
+    advance: 50.0
+    strokes:
+      # The two bowls are tangent at (25, 50); the join is the waist.
+      - segments:
+          - {type: arc, center: [25.0, 75.0], radius: 25.0,
+             start_angle: 155.0, end_angle: 270.0, direction: cw}
+          - {type: arc, center: [25.0, 25.0], radius: 25.0,
+             start_angle: 90.0, end_angle: 205.0, direction: cw}
+
+  "4":
+    advance: 56.0
+    strokes:
+      - polyline: [[40.0, 100.0], [0.0, 32.0], [56.0, 32.0]]
+      - polyline: [[40.0, 100.0], [40.0, 0.0]]
+
+  "5":
+    advance: 56.0
+    strokes:
+      - start: [54.0, 100.0]
+        segments:
+          - {type: line, to: [8.0, 100.0]}
+          - {type: line, to: [8.0, 60.0]}
+          - {type: line, to: [26.0, 60.0]}
+          - {type: arc, center: [26.0, 30.0], radius: 30.0,
+             start_angle: 90.0, end_angle: 215.0, direction: cw}
+
+  "6":
+    advance: 54.0
+    strokes:
+      # A long shoulder whose circle is tangent to the bowl where they meet, so
+      # the 6 has no corner in it.
+      - segments:
+          - {type: arc, center: [75.0, 27.0], radius: 75.0,
+             start_angle: 115.0, end_angle: 180.0, direction: ccw}
+          - {type: circle, center: [27.0, 27.0], radius: 27.0, direction: ccw}
+
+  "7":
+    advance: 56.0
+    strokes:
+      - polyline: [[0.0, 100.0], [56.0, 100.0], [16.0, 0.0]]
+
+  "8":
+    advance: 54.0
+    strokes:
+      # Two circles tangent at (27, 54) — the small one on top, as in every
+      # decent 8.
+      - start: [27.0, 54.0]
+        segments:
+          - {type: circle, center: [27.0, 77.0], radius: 23.0, direction: ccw}
+          - {type: circle, center: [27.0, 27.0], radius: 27.0, direction: cw}
+
+  "9":
+    advance: 54.0
+    strokes:
+      # 6, rotated half a turn about the centre of the design box.
+      - segments:
+          - {type: arc, center: [-21.0, 73.0], radius: 75.0,
+             start_angle: 295.0, end_angle: 360.0, direction: ccw}
+          - {type: circle, center: [27.0, 73.0], radius: 27.0, direction: ccw}
+
+  # --- punctuation ---------------------------------------------------------
+  # `id` is what the glyph is called in the shape names the node publishes;
+  # "w1_04_period_s0" is a more useful RViz label than a punctuation mark.
+
+  ".":
+    id: period
+    advance: 8.0
+    strokes:
+      - segments:
+          - {type: circle, center: [4.0, 4.0], radius: 4.0, direction: ccw}
+
+  ",":
+    id: comma
+    advance: 10.0
+    strokes:
+      - polyline: [[8.0, 8.0], [1.0, -16.0]]
+
+  "!":
+    id: exclamation
+    advance: 8.0
+    strokes:
+      - polyline: [[4.0, 100.0], [4.0, 26.0]]
+      - segments:
+          - {type: circle, center: [4.0, 4.0], radius: 4.0, direction: ccw}
+
+  "?":
+    id: question
+    advance: 50.0
+    strokes:
+      - segments:
+          - {type: arc, center: [25.0, 74.0], radius: 25.0,
+             start_angle: 165.0, end_angle: -60.0, direction: cw}
+          - {type: line, to: [25.0, 26.0]}
+      - segments:
+          - {type: circle, center: [25.0, 4.0], radius: 4.0, direction: ccw}
+
+  "-":
+    id: hyphen
+    advance: 44.0
+    strokes:
+      - polyline: [[0.0, 50.0], [44.0, 50.0]]
+
+  "'":
+    id: apostrophe
+    advance: 8.0
+    strokes:
+      - polyline: [[4.0, 100.0], [4.0, 74.0]]
+
+  ":":
+    id: colon
+    advance: 8.0
+    strokes:
+      - segments:
+          - {type: circle, center: [4.0, 4.0], radius: 4.0, direction: ccw}
+      - segments:
+          - {type: circle, center: [4.0, 56.0], radius: 4.0, direction: ccw}

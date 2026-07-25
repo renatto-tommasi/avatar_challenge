@@ -1,0 +1,74 @@
+# Runtime parameters for the word_writer node.
+# The letters themselves live in config/alphabet.yaml.
+/**:
+  ros__parameters:
+    # Empty means share/avatar_challenge/config/alphabet.yaml.
+    alphabet_file: ""
+    # Where the letters are sent, and where words are read from. The tracer's
+    # subscription is RELIABLE + TRANSIENT_LOCAL and this publisher matches it.
+    shapes_topic: /shape_tracer/add_shapes
+    word_topic: ~/word
+    frame_id: link_base
+
+    # --- the writing plane ------------------------------------------------
+    # The plane is x = plane_distance in the base frame, i.e. parallel to the
+    # base YZ plane. Plane coordinates are u (along the writing direction,
+    # which is -Y) and v (up, which is +Z).
+    plane_distance: 0.42
+    # Flip the writing direction to +Y, for a reader standing on the far side.
+    mirror_text: false
+
+    # --- type -------------------------------------------------------------
+    letter_height: 0.06       # metres per capital letter; scales the whole font
+    # Negative means "use the font's own metric, scaled by letter_height", which
+    # is what keeps tracking proportional when the letters change size.
+    letter_spacing: -1.0
+    word_spacing: -1.0
+    line_spacing: -1.0
+
+    # --- how much of the plane the arm can write on -----------------------
+    area:
+      # With this on, the area is the rectangle inscribed in the disc the arm
+      # can reach on the plane, and the four bounds below are ignored. Turn it
+      # off to write inside a rectangle of your own choosing; the per-letter
+      # reach check still applies.
+      derive_from_reach: true
+      u_min: -0.30
+      u_max: 0.30
+      v_min: 0.15
+      v_max: 0.50
+
+    workspace:
+      # xArm 7: about 700 mm from the shoulder, whose axis sits 267 mm up the
+      # base. `margin` is how much of that reach is kept in hand, since a pose
+      # at full stretch is a pose with no redundancy left to exploit.
+      max_reach: 0.70
+      min_reach: 0.25
+      shoulder_height: 0.267
+      margin: 0.10
+      # Floor for the lowest line, so text never runs into the table.
+      min_height: 0.15
+      # Check every letter's ink box against the reach sphere before publishing.
+      check_glyphs: true
+
+    # --- how the letters are drawn ---------------------------------------
+    tool:
+      standoff: 0.0           # 0 writes exactly on the plane
+      spin: 0.0
+      free_spin: false
+    sampling:
+      max_segment_length: 0.002   # 2 mm between waypoints; letters are small
+      chord_tolerance: 0.0001     # 0.1 mm, so bowls are round rather than faceted
+      blend_distance: 0.0         # never round the corners of a letter
+    velocity_scaling: 0.0     # 0 inherits the tracer's own defaults
+    acceleration_scaling: 0.0
+
+    # --- pacing -----------------------------------------------------------
+    # Seconds between letters. The tracer queues batches, so this is not needed
+    # for correctness; it keeps a long word from arriving all at once.
+    letter_interval: 0.5
+    # Clear what is already drawn when a new word starts.
+    replace_previous: true
+    # Write something as soon as the node comes up. Empty disables it.
+    initial_word: ""
+    initial_delay: 3.0

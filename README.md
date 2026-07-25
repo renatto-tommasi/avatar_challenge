@@ -45,6 +45,10 @@ ros2 launch avatar_challenge start.launch.py autostart:=false   # terminal 1
 ros2 launch avatar_challenge trace_shapes.launch.py             # terminal 2, re-run freely
 ```
 
+To have the arm write words instead of tracing a shape file, see
+[the `word_writer` node](#writing-words-the-word_writer-node): it takes a string
+on a topic and turns it into letters on a plane in front of the robot.
+
 ---
 
 ## Adding shapes at runtime
@@ -166,6 +170,182 @@ longer fatal — the node logs the error and comes up empty, waiting for the top
 To start empty on purpose, point it at a file with a `defaults:` block and no
 `shapes:` key; those defaults are then what the shapes arriving on the topic
 inherit, exactly as a YAML shape would inherit them.
+
+---
+
+## Writing words: the `word_writer` node
+
+`word_writer` is a producer for the topic above. It subscribes to a
+`std_msgs/String` on `~/word`, lays the text out on a plane in front of the
+robot, and publishes it to the tracer **one letter at a time**.
+
+```bash
+ros2 launch avatar_challenge start.launch.py shapes_file:=""   # terminal 1: sim, nothing drawn
+ros2 launch avatar_challenge write_word.launch.py              # terminal 2
+ros2 run avatar_challenge publish_word.py HELLO WORLD          # terminal 3, as often as you like
+```
+
+`ros2 launch avatar_challenge write_word.launch.py word:="HELLO WORLD"` writes
+one as soon as it starts, and `letter_height:=0.09 plane_distance:=0.45` are
+there too. The node never talks to MoveIt — it only publishes shape messages —
+so it costs nothing to restart while the simulation keeps running.
+
+![The alphabet, drawn through the same pipeline the arm draws with](docs/alphabet.png)
+
+### Sending a word
+
+`scripts/publish_word.py` is the sample publisher:
+
+```bash
+ros2 run avatar_challenge publish_word.py HELLO WORLD          # arguments are joined
+ros2 run avatar_challenge publish_word.py "HELLO, ROBOT!"
+ros2 run avatar_challenge publish_word.py --line AVATAR --line ROBOTICS
+ros2 run avatar_challenge publish_word.py --topic /other/word ABC
+```
+
+It is `ros2 topic pub` with the two things that bite you handled: it waits for
+word_writer to be subscribed before publishing, because the word topic is a
+plain `VOLATILE` subscription and a message fired before discovery finishes goes
+nowhere silently, and it then spins briefly so the message is flushed before the
+process exits. The raw equivalent, if you would rather not use it:
+
+```bash
+ros2 topic pub --once /word_writer/word std_msgs/msg/String "{data: 'HELLO WORLD'}"
+```
+
+#### Line breaks and the shell
+
+`--line` is the reliable way to break a line: one per line, nothing to escape.
+
+`\n` works too — the node treats a literal backslash-n as a break, so it
+survives YAML's single-quoted strings — but **only inside quotes**, because bash
+strips the backslash first:
+
+```bash
+publish_word.py AVATAR\nROBOTICS      # -> "AVATARnROBOTICS", one line, with an N in it
+publish_word.py 'AVATAR\nROBOTICS'    # -> two lines
+publish_word.py --line AVATAR --line ROBOTICS   # -> two lines, no escaping
+```
+
+The first form is worth recognising: the stray `n` is drawn as a letter, and if
+the result no longer fits the line it wraps — so it looks like a line break that
+happened one letter late. `publish_word.py` warns when it sees text shaped like
+that. `ros2 topic pub` has the same trap, and the same fix:
+
+```bash
+ros2 topic pub --once /word_writer/word std_msgs/msg/String '{data: "AVATAR\nROBOTICS"}'
+```
+
+Double quotes inside the YAML, so YAML itself turns the escape into a newline.
+
+From your own node it is a plain `std_msgs/String` publisher — no custom QoS
+needed on this topic, unlike `~/add_shapes`:
+
+```python
+publisher = node.create_publisher(String, "/word_writer/word", 10)
+publisher.publish(String(data="HELLO WORLD"))
+```
+
+### One message per letter
+
+A `Shape` is a single pen-down outline, and most capitals are not one: E is
+three strokes, B is three, A is two. So **a letter is a batch** — every stroke of
+it in one `ShapeArray` — and the batches go out in reading order. The tracer
+draws batches in the order they arrive, which is what puts the word on the plane
+left to right, and it finishes a letter before starting the next one because a
+batch that arrives mid-trace waits its turn.
+
+Pacing (`letter_interval`, 0.5 s) is therefore not needed for correctness. It is
+there so a 40-letter sentence does not arrive in one burst, and so the letters
+appear in RViz at a rate a human can watch.
+
+### The writing plane is parallel to YZ
+
+The plane is `x = plane_distance` in the base frame — normal along X, so
+parallel to the base YZ plane. Text is laid out in plane coordinates `(u, v)`:
+
+```
+p_base = (plane_distance, -u, v)
+```
+
+`u` runs along `-Y` because that is "to the right" for someone standing behind
+the robot and looking out along `+X`; `mirror_text: true` flips it for a reader
+on the other side. Each letter's shape frame gets `X_S` along `u`, `Y_S` up, and
+therefore `Z_S = -X_base`, so `tool.face: into_plane` points the pen away from
+the robot, into the plane, exactly like writing on a whiteboard in front of it.
+Because the plane is the same for every letter, so is the tool orientation.
+
+### Where a letter goes, and whether the arm can get there
+
+The start position of each letter falls out of three things: the size of the
+letter, the letters before it, and what the arm can reach.
+
+- **Size.** Glyphs are drawn in a design box one cap height tall and are scaled
+  by `letter_height` (metres per capital). A letter's own `advance` plus the
+  font's `letter_spacing` is where the next one starts.
+- **Reach.** On a plane at distance `d`, the arm covers a disc of radius
+  `sqrt((max_reach - margin)² - d²)` about the shoulder. The writing area is the
+  rectangle inscribed in that disc (wide rather than tall, since text wants
+  width), clamped above `workspace.min_height` so the bottom line never runs
+  into the table. Set `area.derive_from_reach: false` to give the rectangle
+  yourself.
+- **Wrapping.** A word that would cross the right margin moves to the next line
+  intact; a word too long for a whole line is broken at the letter that
+  overflows; `\n` forces a break. When the text runs out of lines, the rest is
+  dropped with a warning rather than drawn somewhere the arm cannot go.
+
+Before publishing, every letter's ink box is checked against the same reach
+sphere, and one that fails is skipped by name. It is a first-order filter — a
+sphere about the shoulder, shrunk by a margin — not an IK check; the tracer's
+redundancy search remains the authority on whether a pose is solvable. What it
+buys is that a bad `area.*` override fails at the writer with a message naming
+the letter, instead of halfway through a trace.
+
+### The font
+
+`config/alphabet.yaml` is the alphabet: A–Z, 0–9 and some punctuation, as
+strokes on a 100-unit cap-height grid. Lower case is folded to upper case, so
+`Hello` and `HELLO` draw the same letters.
+
+The glyphs are geometric — round letters are true circles of radius 50, bowls
+are circular arcs — because the tracer samples arcs and circles exactly, so a
+real arc draws better than a polyline pretending to be one. Arcs are written by
+centre, radius and angle:
+
+```yaml
+  "S":
+    advance: 50.0
+    strokes:
+      - segments:
+          - {type: arc, center: [24.0, 76.0], radius: 24.0,
+             start_angle: 45.0, end_angle: 270.0, direction: ccw}
+          - {type: arc, center: [24.0, 26.0], radius: 26.0,
+             start_angle: 90.0, end_angle: 225.0, direction: cw}
+```
+
+so both endpoints are computed from the circle rather than typed in. That is not
+a convenience: the sampler rejects a centre-defined arc whose endpoints disagree
+about the radius by more than 0.1 mm, and typing them by hand gets that wrong.
+The loader also samples every glyph as it reads it, so a broken stroke is an
+error naming the letter at startup rather than a rejected message later.
+
+Two more things keep the letters clean: `sampling.blend_distance` is 0, because
+corner rounding would take the point off an A, and `max_segment_length` is 2 mm,
+because a 60 mm letter sampled at the shape file's 4 mm looks faceted.
+
+### Seeing it without a robot
+
+`preview_shapes.py` listens on the same topic and renders what it hears into a
+PNG, so a shape generator can be checked in a second with no simulation running:
+
+```bash
+ros2 run avatar_challenge preview_shapes.py --output /tmp/word.png &
+ros2 topic pub --once /word_writer/word std_msgs/msg/String "{data: 'HELLO'}"
+```
+
+The image above was made that way. It is a preview, not a second
+implementation — the sampling is coarser and it does no corner blending, so
+`src/path_sampler.cpp` remains the reference.
 
 ---
 
@@ -386,26 +566,40 @@ same start pose. The full four-shape program previews in under a second.
 avatar_challenge/
 ├── config/
 │   ├── shapes.yaml            # the shape program (documented inline)
-│   └── shape_tracer.yaml      # node parameters
+│   ├── shape_tracer.yaml      # tracer parameters
+│   ├── alphabet.yaml          # the font: A-Z, 0-9, punctuation
+│   └── word_writer.yaml       # writer parameters
 ├── include/avatar_challenge/
 │   ├── shape_spec.hpp         # data model
 │   ├── path_sampler.hpp       # 2D sampling + the lift into robot coordinates
 │   ├── redundancy.hpp         # 7th-DoF search
+│   ├── alphabet.hpp           # font model
+│   ├── text_layout.hpp        # text -> glyph placements on the plane
+│   ├── glyph_shapes.hpp       # placed glyphs -> shape messages
 │   └── markers.hpp
 ├── src/
 │   ├── yaml_loader.cpp        # YAML -> ShapeProgram, with unit conversion
 │   ├── path_sampler.cpp       # lines, arcs, circles, B-splines, blending
 │   ├── redundancy.cpp         # null-space walk, dry-run, scoring
+│   ├── alphabet.cpp           # YAML -> Alphabet, validated by sampling
+│   ├── text_layout.cpp        # wrapping, line breaks, letter positions
+│   ├── glyph_shapes.cpp
 │   ├── markers.cpp
-│   └── shape_tracer_node.cpp  # orchestration
+│   ├── shape_tracer_node.cpp  # orchestration
+│   └── word_writer_node.cpp   # string topic -> one ShapeArray per letter
+├── scripts/
+│   ├── publish_shapes.py      # publish a shapes YAML on ~/add_shapes
+│   ├── publish_word.py        # send a word to word_writer
+│   └── preview_shapes.py      # render what is published, to a PNG
 ├── avatar_challenge_launch/
 │   └── moveit_params.py       # shared MoveIt config for the launch files
 ├── launch/
 │   ├── start.launch.py        # simulation + RViz + tracer
-│   └── trace_shapes.launch.py # tracer only
+│   ├── trace_shapes.launch.py # tracer only
+│   └── write_word.launch.py   # word_writer only
 ├── rviz/shape_tracer.rviz
-├── docs/rviz.png
-└── test/test_shape_geometry.cpp
+├── docs/rviz.png, docs/alphabet.png
+└── test/test_shape_geometry.cpp, test_shape_msg_conversion.cpp, test_alphabet.cpp
 ```
 
 Published topics: `~/shape_markers` (outlines, planes, shape frames, labels) and
@@ -419,10 +613,16 @@ from the node, so it can be tested without a running move_group:
 colcon test --packages-select avatar_challenge && colcon test-result --all
 ```
 
-13 tests cover unit conversion, every primitive kind, arc direction and
+The tests cover unit conversion, every primitive kind, arc direction and
 large-arc handling, the B-spline convex-hull property, that blending removes the
 90° tangent jumps of a square, and that every waypoint lands on the plane with
 the tool normal to it.
+
+The font and the layout are covered the same way, and `test_alphabet.cpp` ends
+by pushing every glyph through `fromMsg()` and `buildTrace()` — the tracer's own
+validator and lift — asserting that each one is accepted, that every waypoint of
+every letter lands on one plane parallel to YZ, and that the tool points into
+it.
 
 ---
 
