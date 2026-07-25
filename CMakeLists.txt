@@ -12,6 +12,8 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
@@ -27,6 +29,8 @@ find_package(yaml-cpp REQUIRED)
 
 set(dependencies
   rclcpp
+  ament_index_cpp
+  std_msgs
   geometry_msgs
   visualization_msgs
   moveit_core
@@ -59,6 +63,9 @@ add_library(shape_tracing SHARED
   src/shape_msg_conversion.cpp
   src/redundancy.cpp
   src/markers.cpp
+  src/alphabet.cpp
+  src/text_layout.cpp
+  src/glyph_shapes.cpp
 )
 target_include_directories(shape_tracing PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -76,12 +83,18 @@ add_executable(shape_tracer src/shape_tracer_node.cpp)
 target_link_libraries(shape_tracer shape_tracing)
 ament_target_dependencies(shape_tracer ${dependencies} Eigen3)
 
+# Turns strings into letters for the tracer to draw. It publishes shape messages
+# and nothing else, so it needs none of MoveIt.
+add_executable(word_writer src/word_writer_node.cpp)
+target_link_libraries(word_writer shape_tracing)
+ament_target_dependencies(word_writer ${dependencies} Eigen3)
+
 install(TARGETS shape_tracing
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
-install(TARGETS shape_tracer
+install(TARGETS shape_tracer word_writer
   DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/
@@ -92,7 +105,7 @@ install(DIRECTORY launch config rviz
 )
 
 # Publishes a shapes YAML file on ~/add_shapes; see the file header.
-install(PROGRAMS scripts/publish_shapes.py
+install(PROGRAMS scripts/publish_shapes.py scripts/preview_shapes.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -108,6 +121,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_shape_msg_conversion test/test_shape_msg_conversion.cpp)
   target_link_libraries(test_shape_msg_conversion shape_tracing "${cpp_typesupport_target}")
   ament_target_dependencies(test_shape_msg_conversion ${dependencies} Eigen3)
+
+  # Reads the real font rather than a fixture: the shipped alphabet passing the
+  # loader's geometry checks is exactly what is worth testing.
+  ament_add_gtest(test_alphabet test/test_alphabet.cpp)
+  target_compile_definitions(test_alphabet
+    PRIVATE ALPHABET_YAML="${CMAKE_CURRENT_SOURCE_DIR}/config/alphabet.yaml")
+  target_link_libraries(test_alphabet shape_tracing "${cpp_typesupport_target}")
+  ament_target_dependencies(test_alphabet ${dependencies} Eigen3)
 endif()
 
 ament_export_include_directories(include)
