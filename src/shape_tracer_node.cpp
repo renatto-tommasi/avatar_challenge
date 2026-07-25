@@ -2,9 +2,15 @@
 //
 // shape_tracer: read 2D shapes from YAML, trace them in the air with an xArm 7.
 //
+// Shapes come from two places: the YAML file named by `shapes_file`, read once
+// at startup, and the ~/add_shapes topic, which carries the same schema as a
+// message so another node can hand over shapes at runtime. Both feed one queue,
+// and one batch is drawn to completion before the next starts.
+//
 // Pipeline per shape
 // ------------------
-//   YAML  ->  ShapeSpec (2D geometry + pose of the shape frame in the robot's
+//   YAML / ShapeArray msg
+//         ->  ShapeSpec (2D geometry + pose of the shape frame in the robot's
 //             base frame)
 //         ->  dense 2D outline (lines / arcs / circles / B-splines, with
 //             optional corner blending)
@@ -27,18 +33,26 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "avatar_challenge/markers.hpp"
+#include "avatar_challenge/msg/shape_array.hpp"
 #include "avatar_challenge/path_sampler.hpp"
 #include "avatar_challenge/redundancy.hpp"
+#include "avatar_challenge/shape_msg_conversion.hpp"
 #include "avatar_challenge/yaml_loader.hpp"
 
 namespace avatar_challenge
@@ -75,41 +89,103 @@ public:
     static_tf_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(node_);
   }
 
-  /// Load the program, plan and (unless plan_only) execute every shape.
-  /// Returns false if anything failed hard.
+  /// Trace the shapes from the YAML file, then keep tracing whatever arrives on
+  /// ~/add_shapes until shutdown. Returns false if anything failed hard.
   bool run()
   {
-    ProgramDefaults defaults;
-    defaults.reference_frame = base_frame_;
-    defaults.velocity_scaling = node_->get_parameter("velocity_scaling").as_double();
-    defaults.acceleration_scaling = node_->get_parameter("acceleration_scaling").as_double();
-    defaults.approach_distance = node_->get_parameter("approach_distance").as_double();
+    defaults_.reference_frame = base_frame_;
+    defaults_.velocity_scaling = node_->get_parameter("velocity_scaling").as_double();
+    defaults_.acceleration_scaling = node_->get_parameter("acceleration_scaling").as_double();
+    defaults_.approach_distance = node_->get_parameter("approach_distance").as_double();
 
-    ShapeProgram program;
-    try {
-      program = loadShapeProgram(shapes_file_, defaults);
-    } catch (const std::exception & e) {
-      RCLCPP_ERROR(logger_, "Failed to load shapes from '%s': %s", shapes_file_.c_str(), e.what());
-      return false;
-    }
+    // loadShapeProgram folds the file's `defaults:` block into defaults_, so this
+    // has to happen before anything else reads it.
+    ShapeProgram initial = loadInitialProgram();
+
+    initPlanning();
+
+    // Only subscribe once defaults_ has settled: shapes arriving on the topic
+    // then inherit exactly what a YAML shape with the same keys missing would.
+    // Transient-local means a producer that published before this node came up
+    // is not lost.
+    shapes_sub_ = node_->create_subscription<msg::ShapeArray>(
+      "~/add_shapes", rclcpp::QoS(10).reliable().transient_local(),
+      [this](const msg::ShapeArray::SharedPtr msg) {onShapeArray(msg);});
     RCLCPP_INFO(
-      logger_, "Loaded %zu shape(s) from %s", program.shapes.size(), shapes_file_.c_str());
+      logger_, "Listening for more shapes on '%s'",
+      shapes_sub_->get_topic_name());
 
-    move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(
-      node_, group_name_);
-    move_group_->setEndEffectorLink(tip_link_);
-    move_group_->setPoseReferenceFrame(base_frame_);
-    move_group_->setPlannerId(node_->get_parameter("planner_id").as_string());
-    move_group_->setPlanningTime(node_->get_parameter("planning_time").as_double());
-    move_group_->setNumPlanningAttempts(
-      static_cast<unsigned>(node_->get_parameter("planning_attempts").as_int()));
-    move_group_->setMaxVelocityScalingFactor(defaults.velocity_scaling);
-    move_group_->setMaxAccelerationScalingFactor(defaults.acceleration_scaling);
-    move_group_->startStateMonitor(5.0);
+    enqueue(std::move(initial), false);
+    return consume();
+  }
 
-    robot_model_ = move_group_->getRobotModel();
-    resolver_ = std::make_shared<RedundancyResolver>(
-      robot_model_, group_name_, tip_link_, redundancyOptions());
+  /// Pop programs off the queue and trace them, one batch at a time. A batch
+  /// that arrives mid-trace waits its turn rather than preempting, so the arm is
+  /// never left with a half-drawn outline.
+  bool consume()
+  {
+    const bool exit_when_done = node_->get_parameter("exit_when_done").as_bool();
+    const bool stop_on_failure = node_->get_parameter("stop_on_failure").as_bool();
+    bool all_ok = true;
+
+    while (rclcpp::ok()) {
+      PendingProgram pending;
+      {
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        // Timed wait rather than a plain one: rclcpp::ok() flipping on Ctrl-C
+        // does not notify the condition variable, and a missed wake-up here
+        // would hang the process on shutdown.
+        queue_cv_.wait_for(
+          lock, std::chrono::milliseconds(200), [this] {return !queue_.empty();});
+        if (queue_.empty()) {
+          continue;
+        }
+        pending = std::move(queue_.front());
+        queue_.pop_front();
+      }
+
+      if (pending.replace) {
+        clearVisuals();
+      }
+      if (!pending.program.shapes.empty()) {
+        if (!runProgram(std::move(pending.program)) ) {
+          all_ok = false;
+          if (stop_on_failure) {
+            return false;
+          }
+        }
+      }
+
+      bool idle = false;
+      {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        idle = queue_.empty();
+      }
+      if (idle) {
+        park();
+        if (!exit_when_done) {
+          RCLCPP_INFO(
+            logger_, "Idle. Publish on '%s' to draw more, or Ctrl-C to exit.",
+            shapes_sub_->get_topic_name());
+        }
+      }
+      if (exit_when_done) {
+        // The initial program is all the (test) harness asked for.
+        break;
+      }
+    }
+    return all_ok;
+  }
+
+  /// Plan and (unless plan_only) execute one batch of shapes.
+  bool runProgram(ShapeProgram program)
+  {
+    // Names become RViz labels and TF child frames, so two shapes called "square"
+    // in different batches would fight over one frame. Taken by value so the
+    // rename happens on our copy.
+    for (ShapeSpec & shape : program.shapes) {
+      shape.name = uniqueName(shape.name);
+    }
 
     // Build every trace up front so ordering can reason about all of them.
     std::vector<CartesianTrace> traces;
@@ -123,17 +199,31 @@ public:
           shape.name.c_str(), shape.reference_frame.c_str(), base_frame_.c_str());
       }
       try {
-        traces.push_back(buildTrace(shape, defaults.approach_distance, 0.0, false));
+        traces.push_back(buildTrace(shape, defaults_.approach_distance, 0.0, false));
       } catch (const std::exception & e) {
-        RCLCPP_ERROR(logger_, "Shape '%s': %s", shape.name.c_str(), e.what());
-        return false;
+        // One unbuildable shape must not sink the batch now that a producer can
+        // send several at once.
+        RCLCPP_ERROR(logger_, "Shape '%s': %s — skipping it", shape.name.c_str(), e.what());
+        traces.push_back(CartesianTrace{});
+        continue;
       }
       RCLCPP_INFO(
         logger_, "Shape '%s': %zu waypoints, outline length %.1f mm",
         shape.name.c_str(), traces.back().waypoints.size(), traces.back().length * 1000.0);
     }
 
-    publishShapeVisuals(program.shapes, traces);
+    // Marker ids have to be unique across every batch this node has drawn, not
+    // just within one program, or a later batch overwrites an earlier one in
+    // RViz. Each shape reserves 16, matching shapeMarkers().
+    std::vector<int> id_bases(program.shapes.size());
+    std::vector<int> traced_ids(program.shapes.size());
+    for (std::size_t i = 0; i < program.shapes.size(); ++i) {
+      id_bases[i] = next_marker_id_;
+      next_marker_id_ += 16;
+      traced_ids[i] = next_traced_id_++;
+    }
+
+    publishShapeVisuals(program.shapes, traces, id_bases);
 
     const std::vector<std::size_t> order = shapeOrder(program.shapes, traces);
     if (order.size() > 1) {
@@ -149,7 +239,11 @@ public:
       if (!rclcpp::ok()) {
         return false;
       }
-      if (!traceShape(program.shapes[index], traces[index], defaults, static_cast<int>(index))) {
+      if (traces[index].waypoints.empty()) {
+        all_ok = false;  // already reported above
+        continue;
+      }
+      if (!traceShape(program.shapes[index], traces[index], traced_ids[index])) {
         RCLCPP_ERROR(logger_, "Shape '%s' failed", program.shapes[index].name.c_str());
         all_ok = false;
         if (node_->get_parameter("stop_on_failure").as_bool()) {
@@ -157,8 +251,6 @@ public:
         }
       }
     }
-
-    park();
     return all_ok;
   }
 
@@ -188,6 +280,124 @@ public:
   }
 
 private:
+  /// One queued batch: a program plus what to do with what is already on screen.
+  struct PendingProgram
+  {
+    ShapeProgram program;
+    bool replace{false};
+  };
+
+  /// Read the shapes file named by the `shapes_file` parameter. Neither an
+  /// absent file nor a broken one is fatal any more: shapes can also arrive on
+  /// ~/add_shapes, so the node comes up and waits instead of exiting.
+  ShapeProgram loadInitialProgram()
+  {
+    if (shapes_file_.empty()) {
+      RCLCPP_INFO(logger_, "No shapes_file given; starting with nothing to draw");
+      return ShapeProgram{};
+    }
+    try {
+      ShapeProgram program = loadShapeProgram(shapes_file_, defaults_);
+      RCLCPP_INFO(
+        logger_, "Loaded %zu shape(s) from %s", program.shapes.size(), shapes_file_.c_str());
+      return program;
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(
+        logger_, "Failed to load shapes from '%s': %s — continuing without them",
+        shapes_file_.c_str(), e.what());
+      return ShapeProgram{};
+    }
+  }
+
+  /// Build the MoveIt handles and the redundancy resolver. Done once, not per
+  /// batch: MoveGroupInterface brings up action clients and a state monitor.
+  void initPlanning()
+  {
+    move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(
+      node_, group_name_);
+    move_group_->setEndEffectorLink(tip_link_);
+    move_group_->setPoseReferenceFrame(base_frame_);
+    move_group_->setPlannerId(node_->get_parameter("planner_id").as_string());
+    move_group_->setPlanningTime(node_->get_parameter("planning_time").as_double());
+    move_group_->setNumPlanningAttempts(
+      static_cast<unsigned>(node_->get_parameter("planning_attempts").as_int()));
+    move_group_->setMaxVelocityScalingFactor(defaults_.velocity_scaling);
+    move_group_->setMaxAccelerationScalingFactor(defaults_.acceleration_scaling);
+    move_group_->startStateMonitor(5.0);
+
+    robot_model_ = move_group_->getRobotModel();
+    resolver_ = std::make_shared<RedundancyResolver>(
+      robot_model_, group_name_, tip_link_, redundancyOptions());
+  }
+
+  /// Subscription callback. Runs on the executor thread while tracing blocks the
+  /// main one, so it only converts and queues — never plans.
+  void onShapeArray(const msg::ShapeArray::SharedPtr msg)
+  {
+    std::vector<std::string> errors;
+    ShapeProgram program = fromMsg(*msg, defaults_, errors);
+    for (const std::string & error : errors) {
+      RCLCPP_ERROR(logger_, "Rejected a shape from ~/add_shapes: %s", error.c_str());
+    }
+
+    const bool replace = msg->mode == msg::ShapeArray::REPLACE;
+    if (program.shapes.empty() && !replace) {
+      RCLCPP_WARN(logger_, "ShapeArray had no usable shapes; nothing queued");
+      return;
+    }
+    RCLCPP_INFO(
+      logger_, "Queued %zu shape(s) from ~/add_shapes (%s)", program.shapes.size(),
+      replace ? "replace" : "append");
+    enqueue(std::move(program), replace);
+  }
+
+  void enqueue(ShapeProgram program, bool replace)
+  {
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      queue_.push_back(PendingProgram{std::move(program), replace});
+    }
+    queue_cv_.notify_one();
+  }
+
+  /// Shape names identify TF frames and RViz labels, so they have to stay unique
+  /// across every batch, not just within one.
+  std::string uniqueName(const std::string & requested)
+  {
+    std::string name = requested.empty() ? "shape" : requested;
+    if (used_names_.insert(name).second) {
+      return name;
+    }
+    for (int suffix = 2; ; ++suffix) {
+      const std::string candidate = name + "_" + std::to_string(suffix);
+      if (used_names_.insert(candidate).second) {
+        RCLCPP_WARN(
+          logger_, "Shape name '%s' is already in use; drawing it as '%s'",
+          name.c_str(), candidate.c_str());
+        return candidate;
+      }
+    }
+  }
+
+  /// Wipe every marker this node has published and start ids over. Used by
+  /// ShapeArray::REPLACE. The static TF frames published per shape cannot be
+  /// retracted — tf2 has no "forget this static transform" — so stale
+  /// shape_<name> frames linger until the node restarts.
+  void clearVisuals()
+  {
+    visualization_msgs::msg::MarkerArray clear;
+    visualization_msgs::msg::Marker marker;
+    marker.action = visualization_msgs::msg::Marker::DELETEALL;
+    clear.markers.push_back(marker);
+    marker_pub_->publish(clear);
+    traced_pub_->publish(clear);
+
+    next_marker_id_ = 0;
+    next_traced_id_ = 0;
+    used_names_.clear();
+    RCLCPP_INFO(logger_, "Cleared previously drawn shapes");
+  }
+
   void declareParameters()
   {
     shapes_file_ = node_->declare_parameter<std::string>("shapes_file", "");
@@ -291,8 +501,8 @@ private:
       std::vector<double> best_exit;
 
       for (std::size_t i = 0; i < n; ++i) {
-        if (taken[i]) {
-          continue;
+        if (taken[i] || traces[i].waypoints.empty()) {
+          continue;  // shapes that failed to build carry an empty trace
         }
         // Cheap probe: one IK solve at the entry pose seeded from where the arm
         // currently is. The expensive full evaluation happens once the shape is
@@ -328,15 +538,15 @@ private:
   }
 
   void publishShapeVisuals(
-    const std::vector<ShapeSpec> & shapes, const std::vector<CartesianTrace> & traces)
+    const std::vector<ShapeSpec> & shapes, const std::vector<CartesianTrace> & traces,
+    const std::vector<int> & id_bases)
   {
     visualization_msgs::msg::MarkerArray array;
     std::vector<geometry_msgs::msg::TransformStamped> transforms;
     const rclcpp::Time stamp = node_->now();
 
     for (std::size_t i = 0; i < shapes.size(); ++i) {
-      const auto markers =
-        shapeMarkers(shapes[i], traces[i], base_frame_, static_cast<int>(i) * 16, stamp);
+      const auto markers = shapeMarkers(shapes[i], traces[i], base_frame_, id_bases[i], stamp);
       array.markers.insert(array.markers.end(), markers.markers.begin(), markers.markers.end());
 
       // Publishing the shape frame on TF makes the "author in 2D, execute in 3D"
@@ -392,14 +602,12 @@ private:
     }
   }
 
-  bool traceShape(
-    const ShapeSpec & shape, const CartesianTrace & trace, const ProgramDefaults & defaults,
-    int shape_index)
+  bool traceShape(const ShapeSpec & shape, const CartesianTrace & trace, int traced_marker_id)
   {
     const double velocity_scaling =
-      shape.velocity_scaling > 0 ? shape.velocity_scaling : defaults.velocity_scaling;
+      shape.velocity_scaling > 0 ? shape.velocity_scaling : defaults_.velocity_scaling;
     const double acceleration_scaling =
-      shape.acceleration_scaling > 0 ? shape.acceleration_scaling : defaults.acceleration_scaling;
+      shape.acceleration_scaling > 0 ? shape.acceleration_scaling : defaults_.acceleration_scaling;
 
     // The full pose sequence the arm must hold a single configuration branch
     // through: stand off above the entry, draw, stand off again.
@@ -430,7 +638,7 @@ private:
       std::vector<Eigen::Isometry3d> spin_path = full_path;
       if (shape.tool.free_spin) {
         spin = shape.tool.spin + 2.0 * kPi * static_cast<double>(s) / spin_samples;
-        spin_traces.push_back(buildTrace(shape, defaults.approach_distance, spin, true));
+        spin_traces.push_back(buildTrace(shape, defaults_.approach_distance, spin, true));
         const CartesianTrace & st = spin_traces.back();
         spin_path.clear();
         spin_path.reserve(st.waypoints.size() + 2);
@@ -567,7 +775,7 @@ private:
 
       std::vector<Eigen::Vector3d> points;
       appendTracedPoints(traced, *cartesian_start, points);
-      publishTracedPath(points, shape_index);
+      publishTracedPath(points, traced_marker_id);
       return true;
     }
 
@@ -597,11 +805,13 @@ private:
     RCLCPP_INFO(logger_, "%s", os.str().c_str());
   }
 
-  void publishTracedPath(const std::vector<Eigen::Vector3d> & points, int shape_index)
+  void publishTracedPath(const std::vector<Eigen::Vector3d> & points, int traced_marker_id)
   {
+    // "traced_path" is its own marker namespace (see markers.cpp), so this
+    // counter is free to run independently of the shape-marker ids.
     visualization_msgs::msg::MarkerArray array;
     array.markers.push_back(
-      tracedPathMarker(points, base_frame_, 1000 + shape_index, node_->now()));
+      tracedPathMarker(points, base_frame_, traced_marker_id, node_->now()));
     traced_pub_->publish(array);
   }
 
@@ -618,6 +828,23 @@ private:
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr traced_pub_;
+  rclcpp::Subscription<msg::ShapeArray>::SharedPtr shapes_sub_;
+
+  /// Seeded from parameters, then folded with the shapes file's `defaults:`
+  /// block. Written only during run() before the subscription exists, and
+  /// read-only afterwards, which is what makes it safe to touch from the
+  /// subscription callback.
+  ProgramDefaults defaults_;
+
+  /// Batches waiting to be drawn, newest last.
+  std::deque<PendingProgram> queue_;
+  std::mutex queue_mutex_;
+  std::condition_variable queue_cv_;
+
+  /// Marker ids and shape names accumulate across batches; see runProgram().
+  int next_marker_id_{0};
+  int next_traced_id_{0};
+  std::set<std::string> used_names_;
 
   /// Non-empty only in plan_only mode; see currentJoints().
   std::vector<double> virtual_joints_;
@@ -642,6 +869,8 @@ int main(int argc, char ** argv)
   int exit_code = 0;
   try {
     avatar_challenge::ShapeTracer tracer(node);
+    // run() draws the shapes file and then serves ~/add_shapes until shutdown,
+    // so it only returns on Ctrl-C or when exit_when_done cuts it short.
     if (!tracer.run()) {
       exit_code = 1;
     } else {
@@ -652,17 +881,7 @@ int main(int argc, char ** argv)
     exit_code = 1;
   }
 
-  // Stay alive so the latched markers remain visible in RViz, unless asked not
-  // to (e.g. by a test harness).
-  if (node->has_parameter("exit_when_done") &&
-    node->get_parameter("exit_when_done").as_bool())
-  {
-    rclcpp::shutdown();
-  } else if (rclcpp::ok()) {
-    RCLCPP_INFO(node->get_logger(), "Idle. Ctrl-C to exit.");
-  }
-
-  spinner.join();
   rclcpp::shutdown();
+  spinner.join();
   return exit_code;
 }

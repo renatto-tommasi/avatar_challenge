@@ -264,8 +264,14 @@ ShapeProgram loadShapeProgram(const std::string & path, ProgramDefaults & defaul
     }
   }
 
-  if (!root["shapes"] || !root["shapes"].IsSequence() || root["shapes"].size() == 0) {
-    throw std::runtime_error("'" + path + "' has no non-empty 'shapes' sequence");
+  // A file with no shapes is legitimate: it can still carry a `defaults:` block
+  // for shapes that arrive later on the tracer's ~/add_shapes topic. A `shapes:`
+  // key that is present but not a sequence is still a mistake worth reporting.
+  if (root["shapes"] && !root["shapes"].IsSequence()) {
+    throw std::runtime_error("'" + path + "': 'shapes' must be a sequence");
+  }
+  if (!root["shapes"]) {
+    return ShapeProgram{};
   }
 
   ShapeProgram program;

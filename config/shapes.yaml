@@ -120,3 +120,15 @@ shapes:
           - [-10.0, 110.0]
           - [-45.0, 45.0]
     closed: false
+
+  - name: baby_figure
+    start:
+      position: [350.0, 40.0, 150.0]
+      orientation_rpy: [70.0, 0.0, 0.0]
+    vertices:
+      - [0.0, 0.0]
+      - [30.0, 0.0]
+      - [30.0, 30.0]
+      - [0.0, 30.0]
+
+    closed: true

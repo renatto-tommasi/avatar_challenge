@@ -7,10 +7,16 @@ from wherever the arm happens to be.
 
 ```bash
 cd ~/dev_ws
-colcon build --packages-select avatar_challenge
+colcon build --packages-select avatar_challenge --symlink-install
 source install/setup.bash
 ros2 launch avatar_challenge start.launch.py
 ```
+
+`--symlink-install` matters: launch files resolve `config/shapes.yaml` through
+the *install* space, and without it `install(DIRECTORY config ...)` copies the
+file at build time, so editing a shape has no effect until you rebuild. With
+symlinks you build once and every later YAML edit is picked up on the next
+launch.
 
 That brings up move_group, the fake ros2_control stack, RViz, and the tracer.
 The arm draws the four demo shapes in `config/shapes.yaml`: a square, a
@@ -37,6 +43,47 @@ To iterate without restarting the simulation:
 ```bash
 ros2 launch avatar_challenge start.launch.py autostart:=false   # terminal 1
 ros2 launch avatar_challenge trace_shapes.launch.py             # terminal 2, re-run freely
+```
+
+---
+
+## Adding shapes at runtime
+
+The YAML file is read once, at launch. After that the node keeps listening on
+`/shape_tracer/add_shapes` for an `avatar_challenge/msg/ShapeArray`, so a shape
+generator elsewhere in the system can hand over work without a restart:
+
+```bash
+ros2 run avatar_challenge publish_shapes.py my_shapes.yaml          # append
+ros2 run avatar_challenge publish_shapes.py my_shapes.yaml --replace
+```
+
+The message mirrors the YAML schema field for field — `Shape.msg` has the same
+`start`, `vertices`/`path`, `closed`, `tool` and `sampling` as a YAML shape — with
+two differences forced by the message format:
+
+- **SI units only.** Messages carry metres and radians; the YAML's `units:` block
+  exists because YAML is hand-authored.
+- **Orientation is a quaternion**, in a `geometry_msgs/Pose`, rather than
+  `orientation_rpy`. `publish_shapes.py` converts.
+
+A message has no absent fields, so `has_tool` / `has_sampling` carry what an
+omitted YAML key means: inherit the program defaults. This matters because `0.0`
+is a meaningful value for `tool.standoff` and `sampling.blend_distance`.
+
+Each publication is one batch: its shapes are ordered and drawn together, and a
+batch that arrives while the arm is drawing waits its turn rather than
+interrupting a half-finished outline. `mode: REPLACE` clears the accumulated
+markers first; `APPEND` (the default) leaves earlier drawings on screen.
+
+Because shapes can arrive this way, a missing or unparseable `shapes_file` is no
+longer fatal — the node logs the error and comes up empty, waiting for the topic.
+To start empty on purpose, point it at a file with a `defaults:` block and no
+`shapes:` key; those defaults are then what the shapes arriving on the topic
+inherit, exactly as a YAML shape would inherit them.
+
+```bash
+ros2 interface show avatar_challenge/msg/Shape   # the full schema
 ```
 
 ---
