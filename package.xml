@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>avatar_challenge</name>
+  <version>0.1.0</version>
+  <description>
+    Trace 2D shapes in 3D space with a UFactory xArm 7. Shapes are described in a
+    YAML file as 2D geometry inside a per-shape "shape frame"; the node lifts them
+    into the robot base frame, holds the tool normal to the shape plane, and uses
+    the arm's 7th degree of freedom to pick the cheapest configuration for the
+    whole trace given where the robot currently is.
+  </description>
+  <maintainer email="renatto.tommasi@gmail.com">Renatto Tommasi</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_eigen</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>moveit_core</depend>
+  <depend>moveit_ros_planning</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_msgs</depend>
+  <depend>yaml-cpp</depend>
+  <depend>eigen</depend>
+
+  <exec_depend>xarm_moveit_config</exec_depend>
+  <exec_depend>xarm_description</exec_depend>
+  <exec_depend>xarm_controller</exec_depend>
+  <exec_depend>uf_ros_lib</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

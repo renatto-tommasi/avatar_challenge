@@ -1,0 +1,122 @@
+# ---------------------------------------------------------------------------
+# Shape program for the xArm 7 shape tracer.
+#
+# Coordinate model
+# ----------------
+# Every shape is authored in 2D inside its own *shape frame* S. The origin of S
+# is the shape's first vertex — which the challenge fixes at (0, 0) — and the XY
+# plane of S is the drawing plane, so the plane normal is simply Z_S.
+#
+# `start` places S in the robot's base frame. One rigid transform then maps every
+# authored coordinate back into robot coordinates:
+#
+#     p_base = T_base_shape * (x, y, tool.standoff)
+#
+# and "tool normal to the plane" is just "tool approach axis parallel to Z_S",
+# which is why the tool orientation is constant for a whole shape.
+#
+# Units
+# -----
+# `units` may be set at file level (inside `defaults`) and overridden per shape.
+#   length: m | cm | mm       angle: rad | deg
+#
+# Geometry
+# --------
+# Use EITHER `vertices` (a polygon; the first entry must be [0, 0]) OR `path`
+# (a list of primitives). Primitives:
+#   {type: line,   to: [x, y]}
+#   {type: arc,    to: [x, y], center: [cx, cy], direction: ccw|cw}
+#   {type: arc,    to: [x, y], radius: r, direction: ccw|cw, large_arc: false}
+#   {type: circle, center: [cx, cy], direction: ccw|cw}
+#   {type: bspline, control_points: [[x, y], ...], degree: 3, periodic: false}
+# ---------------------------------------------------------------------------
+
+defaults:
+  units:
+    length: mm
+    angle: deg
+  reference_frame: link_base
+
+  tool:
+    # into_plane: the tool's approach axis points along -Z_S, i.e. like a pen
+    # pressing on the page. along_normal points it the other way.
+    face: into_plane
+    # Rotation of the tool about the plane normal. The task only constrains the
+    # tool to be normal to the plane, so this angle is free; set free_spin to
+    # let the redundancy search choose it.
+    spin: 0.0
+    free_spin: false
+    spin_samples: 8
+    # Offset from the drawing plane along +Z_S. 0 traces exactly on the plane.
+    standoff: 0.0
+
+  sampling:
+    max_segment_length: 4.0   # mm between consecutive waypoints
+    chord_tolerance: 0.2      # mm max deviation of a chord from the true curve
+    blend_distance: 8.0       # mm of corner rounding; 0 keeps sharp corners
+
+  motion:
+    velocity_scaling: 0.35
+    acceleration_scaling: 0.35
+    approach_distance: 60.0   # mm of standoff before/after each shape
+
+shapes:
+  # The example straight from the brief: a 100 mm square, 350 mm in front of the
+  # robot and 350 mm up, rotated 45 degrees about Z. The plane is vertical
+  # (pitch 90 deg tips Z_S from "up" to "horizontal"), so the arm draws on a
+  # wall-like surface facing it.
+  - name: square
+    start:
+      position: [350.0, -120.0, 350.0]
+      orientation_rpy: [0.0, 90.0, 45.0]
+    vertices:
+      - [0.0, 0.0]
+      - [0.0, 100.0]
+      - [100.0, 100.0]
+      - [100.0, 0.0]
+    closed: true
+
+  # An equilateral triangle on a plane tilted 20 degrees off vertical, to show
+  # the tool re-orienting to stay normal to a different plane.
+  - name: triangle
+    start:
+      position: [400.0, 40.0, 300.0]
+      orientation_rpy: [0.0, 70.0, 0.0]
+    vertices:
+      - [0.0, 0.0]
+      - [120.0, 0.0]
+      - [60.0, 103.9]
+    closed: true
+
+  # Arcs: a 90 mm "stadium" — two straights joined by two semicircles, each
+  # defined by its centre so the sweep is unambiguous.
+  - name: stadium
+    start:
+      position: [380.0, 200.0, 430.0]
+      orientation_rpy: [0.0, 90.0, 0.0]
+    path:
+      - {type: line, to: [90.0, 0.0]}
+      - {type: arc, to: [90.0, 70.0], center: [90.0, 35.0], direction: ccw}
+      - {type: line, to: [0.0, 70.0]}
+      - {type: arc, to: [0.0, 0.0], center: [0.0, 35.0], direction: ccw}
+    closed: false
+    sampling:
+      blend_distance: 0.0   # already tangent-continuous; nothing to round
+
+  # A cubic B-spline: a closed, periodic curve through six control points.
+  - name: spline_blob
+    start:
+      position: [340.0, 340.0, 250.0]
+      orientation_rpy: [0.0, 90.0, -30.0]
+    path:
+      - type: bspline
+        degree: 3
+        periodic: true
+        control_points:
+          - [0.0, 0.0]
+          - [90.0, -25.0]
+          - [140.0, 55.0]
+          - [80.0, 130.0]
+          - [-10.0, 110.0]
+          - [-45.0, 45.0]
+    closed: false

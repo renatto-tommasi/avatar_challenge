@@ -1,0 +1,55 @@
+# Runtime parameters for the shape_tracer node.
+# The shapes themselves live in config/shapes.yaml.
+/**:
+  ros__parameters:
+    group: xarm7
+    tip_link: link_eef
+    base_frame: link_base
+
+    # --- planning ---------------------------------------------------------
+    planner_id: RRTConnect
+    planning_time: 5.0
+    planning_attempts: 10
+    velocity_scaling: 0.35
+    acceleration_scaling: 0.35
+    approach_distance: 0.06        # metres; overridden by the shapes file
+
+    # --- Cartesian tracing ------------------------------------------------
+    cartesian_step: 0.004          # metres of end-effector motion per IK step
+    cartesian_jump_threshold: 4.0  # reject configuration-space jumps
+    min_cartesian_fraction: 0.995  # retry with another configuration below this
+    totg_path_tolerance: 0.05      # joint-space corner rounding in the retimer
+    max_config_attempts: 4         # ranked configurations to try before failing
+
+    # --- behaviour --------------------------------------------------------
+    plan_only: false
+    stop_on_failure: false
+    optimize_shape_order: true     # greedy nearest-entry ordering in joint space
+    exit_when_done: false
+    # Named SRDF state to return to once every shape is drawn, so the arm ends
+    # somewhere known instead of hovering over the last outline it traced.
+    # Empty string disables it. xarm7 defines "home" and "hold-up".
+    park_state: home
+
+    # --- 7th-DoF redundancy search ---------------------------------------
+    redundancy:
+      # Self-motion manifold sampling: how many null-space steps to take in each
+      # direction from the configuration that direct IK lands on, and how big a
+      # step to take. 10 x 0.20 rad covers roughly +-2 rad of elbow swing.
+      samples_per_direction: 10
+      null_step: 0.20
+      dedup_distance: 0.12
+      ik_timeout: 0.01
+      limit_margin: 0.05           # radians of headroom required at every limit
+      evaluation_stride: 4         # dry-run every Nth waypoint when scoring
+
+      # Cost weights. Raise w_approach to favour configurations near where the
+      # arm already is; raise w_manip to stay further from singularities.
+      w_approach: 1.0
+      w_path: 2.0
+      w_limits: 1.5
+      w_manip: 1.0
+
+      # Per-joint cost weights: swinging joint 1 moves the whole arm through the
+      # workspace, spinning joint 7 barely moves anything.
+      joint_weights: [2.0, 1.8, 1.4, 1.2, 0.8, 0.6, 0.4]
