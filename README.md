@@ -51,40 +51,121 @@ ros2 launch avatar_challenge trace_shapes.launch.py             # terminal 2, re
 
 The YAML file is read once, at launch. After that the node keeps listening on
 `/shape_tracer/add_shapes` for an `avatar_challenge/msg/ShapeArray`, so a shape
-generator elsewhere in the system can hand over work without a restart:
+generator elsewhere in the system can hand over work without a restart.
+
+### The QoS has to match
+
+> **The subscription is `RELIABLE` + `TRANSIENT_LOCAL`.** A publisher created with
+> the default profile offers `VOLATILE`, which is *incompatible* — DDS refuses the
+> connection and **not one message is delivered**. There is no error at the
+> publisher; you just watch nothing happen.
+
+Transient-local is deliberate: it means a producer that publishes before the
+tracer has finished starting up is not lost. Match it on your side and you get
+that for free. rclpy will log `offering incompatible QoS` if you get it wrong,
+and `ros2 topic info -v /shape_tracer/add_shapes` shows both ends' profiles.
+
+### Three ways to send
+
+**From the command line**, as a smoke test — note the two `--qos-*` flags:
+
+```bash
+ros2 topic pub --once \
+  --qos-durability transient_local --qos-reliability reliable \
+  /shape_tracer/add_shapes avatar_challenge/msg/ShapeArray \
+  '{mode: 0, shapes: [{name: cli_triangle, closed: true,
+    start: {position: {x: 0.4, y: 0.0, z: 0.35},
+            orientation: {x: 0.0, y: 0.707, z: 0.0, w: 0.707}},
+    vertices: [{x: 0.0, y: 0.0}, {x: 0.12, y: 0.0}, {x: 0.06, y: 0.104}]}]}'
+```
+
+**From a YAML file**, using the bundled helper, which converts units and rpy for
+you and already uses the right QoS:
 
 ```bash
 ros2 run avatar_challenge publish_shapes.py my_shapes.yaml          # append
 ros2 run avatar_challenge publish_shapes.py my_shapes.yaml --replace
 ```
 
-The message mirrors the YAML schema field for field — `Shape.msg` has the same
-`start`, `vertices`/`path`, `closed`, `tool` and `sampling` as a YAML shape — with
-two differences forced by the message format:
+**From your own node** — the case this topic exists for. `scripts/publish_shapes.py`
+is a fuller worked example; the minimum is:
+
+```python
+from avatar_challenge.msg import Point2D, Shape, ShapeArray
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+QOS = QoSProfile(depth=10,
+                 reliability=ReliabilityPolicy.RELIABLE,
+                 durability=DurabilityPolicy.TRANSIENT_LOCAL)   # must match
+pub = node.create_publisher(ShapeArray, "/shape_tracer/add_shapes", QOS)
+
+shape = Shape()
+shape.name = "generated_square"
+shape.start.position.x, shape.start.position.z = 0.4, 0.35
+shape.start.orientation.y = shape.start.orientation.w = 0.7071  # Ry(90 deg)
+shape.vertices = [Point2D(x=0.0, y=0.0), Point2D(x=0.1, y=0.0),
+                  Point2D(x=0.1, y=0.1), Point2D(x=0.0, y=0.1)]
+shape.closed = True
+
+batch = ShapeArray()
+batch.mode = ShapeArray.APPEND
+batch.shapes = [shape]
+pub.publish(batch)
+```
+
+Everything left unset inherits the program defaults, which is what the empty
+`tool`/`sampling` fields above are doing. `ros2 interface show
+avatar_challenge/msg/Shape` prints the full annotated schema.
+
+### What the node will reject
+
+A malformed shape is logged by name and skipped; the rest of the batch is still
+drawn, so one typo does not cost a producer nine good shapes. The rules are the
+same ones the YAML loader enforces:
+
+- exactly one of `vertices` or `path` — never both, never neither;
+- `vertices[0]` must be `(0, 0)`; it *defines* the shape frame origin. At least
+  two vertices;
+- an `ARC` segment needs `has_center` or a non-zero `radius`; a `CIRCLE` needs
+  `has_center`; a `BSPLINE` needs `control_points`;
+- `start.orientation` must not be all zeros. A default-constructed
+  `geometry_msgs/Quaternion` is fine (`w = 1`); one built from a zeroed array is
+  not, and would otherwise normalise to NaN and surface as an unexplained IK
+  failure much later.
+
+### How it differs from the YAML
+
+`Shape.msg` mirrors the YAML schema field for field — same `start`,
+`vertices`/`path`, `closed`, `tool`, `sampling` — with two differences forced by
+the message format:
 
 - **SI units only.** Messages carry metres and radians; the YAML's `units:` block
-  exists because YAML is hand-authored.
-- **Orientation is a quaternion**, in a `geometry_msgs/Pose`, rather than
-  `orientation_rpy`. `publish_shapes.py` converts.
+  exists because YAML is hand-authored, and a message carrying a
+  `geometry_msgs/Pose` cannot coherently be in millimetres.
+- **Orientation is a quaternion** rather than `orientation_rpy`.
+  `publish_shapes.py` shows the conversion.
 
 A message has no absent fields, so `has_tool` / `has_sampling` carry what an
 omitted YAML key means: inherit the program defaults. This matters because `0.0`
-is a meaningful value for `tool.standoff` and `sampling.blend_distance`.
+is a meaningful value for `tool.standoff` (trace on the plane) and
+`sampling.blend_distance` (sharp corners), so no sentinel would do.
 
-Each publication is one batch: its shapes are ordered and drawn together, and a
-batch that arrives while the arm is drawing waits its turn rather than
-interrupting a half-finished outline. `mode: REPLACE` clears the accumulated
-markers first; `APPEND` (the default) leaves earlier drawings on screen.
+### Batch semantics
+
+Each publication is one batch: its shapes are ordered and drawn together, so the
+draw-order optimisation can reason about all of them at once. A batch that
+arrives while the arm is drawing waits its turn rather than interrupting a
+half-finished outline. `mode: REPLACE` clears the accumulated markers first;
+`APPEND` (the default, and the zero value) leaves earlier drawings on screen.
+
+Shape names become RViz labels and `shape_<name>` TF frames, so they are made
+unique across batches — a second `square` is drawn as `square_2`, with a warning.
 
 Because shapes can arrive this way, a missing or unparseable `shapes_file` is no
 longer fatal — the node logs the error and comes up empty, waiting for the topic.
 To start empty on purpose, point it at a file with a `defaults:` block and no
 `shapes:` key; those defaults are then what the shapes arriving on the topic
 inherit, exactly as a YAML shape would inherit them.
-
-```bash
-ros2 interface show avatar_challenge/msg/Shape   # the full schema
-```
 
 ---
 
