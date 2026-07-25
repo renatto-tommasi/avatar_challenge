@@ -1,4 +1,5 @@
 # avatar_challenge — drawing 2D shapes in 3D with an xArm 7
+![Avatar Robotics](docs/avatar.png)
 
 Reads a set of 2D shapes from YAML and traces them in the air with a simulated
 UFactory xArm 7, holding the tool normal to each shape's plane and using the
