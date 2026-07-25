@@ -182,7 +182,7 @@ robot, and publishes it to the tracer **one letter at a time**.
 ```bash
 ros2 launch avatar_challenge start.launch.py shapes_file:=""   # terminal 1: sim, nothing drawn
 ros2 launch avatar_challenge write_word.launch.py              # terminal 2
-ros2 topic pub --once /word_writer/word std_msgs/msg/String "{data: 'HELLO WORLD'}"
+ros2 run avatar_challenge publish_word.py HELLO WORLD          # terminal 3, as often as you like
 ```
 
 `ros2 launch avatar_challenge write_word.launch.py word:="HELLO WORLD"` writes
@@ -191,6 +191,35 @@ there too. The node never talks to MoveIt — it only publishes shape messages �
 so it costs nothing to restart while the simulation keeps running.
 
 ![The alphabet, drawn through the same pipeline the arm draws with](docs/alphabet.png)
+
+### Sending a word
+
+`scripts/publish_word.py` is the sample publisher:
+
+```bash
+ros2 run avatar_challenge publish_word.py HELLO WORLD       # arguments are joined
+ros2 run avatar_challenge publish_word.py "HELLO, ROBOT!"
+ros2 run avatar_challenge publish_word.py 'LINE ONE\nLINE TWO'   # forced line break
+ros2 run avatar_challenge publish_word.py --topic /other/word ABC
+```
+
+It is `ros2 topic pub` with the two things that bite you handled: it waits for
+word_writer to be subscribed before publishing, because the word topic is a
+plain `VOLATILE` subscription and a message fired before discovery finishes goes
+nowhere silently, and it then spins briefly so the message is flushed before the
+process exits. The raw equivalent, if you would rather not use it:
+
+```bash
+ros2 topic pub --once /word_writer/word std_msgs/msg/String "{data: 'HELLO WORLD'}"
+```
+
+From your own node it is a plain `std_msgs/String` publisher — no custom QoS
+needed on this topic, unlike `~/add_shapes`:
+
+```python
+publisher = node.create_publisher(String, "/word_writer/word", 10)
+publisher.publish(String(data="HELLO WORLD"))
+```
 
 ### One message per letter
 
@@ -535,6 +564,7 @@ avatar_challenge/
 │   └── word_writer_node.cpp   # string topic -> one ShapeArray per letter
 ├── scripts/
 │   ├── publish_shapes.py      # publish a shapes YAML on ~/add_shapes
+│   ├── publish_word.py        # send a word to word_writer
 │   └── preview_shapes.py      # render what is published, to a PNG
 ├── avatar_challenge_launch/
 │   └── moveit_params.py       # shared MoveIt config for the launch files

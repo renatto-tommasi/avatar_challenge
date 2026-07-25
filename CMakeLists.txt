@@ -104,8 +104,12 @@ install(DIRECTORY launch config rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
-# Publishes a shapes YAML file on ~/add_shapes; see the file header.
-install(PROGRAMS scripts/publish_shapes.py scripts/preview_shapes.py
+# Development helpers: publish a shapes YAML on ~/add_shapes, send a word to
+# word_writer, and render whatever is published into a PNG. See the file headers.
+install(PROGRAMS
+  scripts/publish_shapes.py
+  scripts/publish_word.py
+  scripts/preview_shapes.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
