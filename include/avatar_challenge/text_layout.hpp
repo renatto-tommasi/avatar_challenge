@@ -78,8 +78,20 @@ struct TextLayout
   double line_spacing{0.0};
 };
 
+/// Turn every way a line break can arrive into a '\n'.
+///
+/// Real newlines pass through, CR and CRLF collapse to one break, and the
+/// two-character sequence backslash-n becomes a break as well. That last one is
+/// not a nicety: text reaches this node through shells and YAML, and both eat
+/// escapes in ways that leave a literal backslash-n behind
+/// (`ros2 topic pub ... "{data: 'A\nB'}"` is the common case). Nothing is lost
+/// by claiming it — the font has no backslash glyph, so the alternative was to
+/// drop the backslash and draw an N.
+std::string normalizeLineBreaks(const std::string & text);
+
 /// Lay `text` out in the area, wrapping at word boundaries and breaking a word
-/// that is too long for one line. '\n' forces a line break.
+/// that is too long for one line. Line breaks are whatever
+/// normalizeLineBreaks() recognises, and are applied before anything else.
 TextLayout layoutText(
   const std::string & text, const Alphabet & alphabet, const LayoutOptions & options);
 

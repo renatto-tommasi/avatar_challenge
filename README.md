@@ -197,9 +197,9 @@ so it costs nothing to restart while the simulation keeps running.
 `scripts/publish_word.py` is the sample publisher:
 
 ```bash
-ros2 run avatar_challenge publish_word.py HELLO WORLD       # arguments are joined
+ros2 run avatar_challenge publish_word.py HELLO WORLD          # arguments are joined
 ros2 run avatar_challenge publish_word.py "HELLO, ROBOT!"
-ros2 run avatar_challenge publish_word.py 'LINE ONE\nLINE TWO'   # forced line break
+ros2 run avatar_challenge publish_word.py --line AVATAR --line ROBOTICS
 ros2 run avatar_challenge publish_word.py --topic /other/word ABC
 ```
 
@@ -212,6 +212,31 @@ process exits. The raw equivalent, if you would rather not use it:
 ```bash
 ros2 topic pub --once /word_writer/word std_msgs/msg/String "{data: 'HELLO WORLD'}"
 ```
+
+#### Line breaks and the shell
+
+`--line` is the reliable way to break a line: one per line, nothing to escape.
+
+`\n` works too — the node treats a literal backslash-n as a break, so it
+survives YAML's single-quoted strings — but **only inside quotes**, because bash
+strips the backslash first:
+
+```bash
+publish_word.py AVATAR\nROBOTICS      # -> "AVATARnROBOTICS", one line, with an N in it
+publish_word.py 'AVATAR\nROBOTICS'    # -> two lines
+publish_word.py --line AVATAR --line ROBOTICS   # -> two lines, no escaping
+```
+
+The first form is worth recognising: the stray `n` is drawn as a letter, and if
+the result no longer fits the line it wraps — so it looks like a line break that
+happened one letter late. `publish_word.py` warns when it sees text shaped like
+that. `ros2 topic pub` has the same trap, and the same fix:
+
+```bash
+ros2 topic pub --once /word_writer/word std_msgs/msg/String '{data: "AVATAR\nROBOTICS"}'
+```
+
+Double quotes inside the YAML, so YAML itself turns the escape into a newline.
 
 From your own node it is a plain `std_msgs/String` publisher — no custom QoS
 needed on this topic, unlike `~/add_shapes`:

@@ -357,6 +357,50 @@ TEST(GlyphShapes, PlacesTheLetterWhereTheLayoutPutIt)
   EXPECT_FALSE(batch.shapes[0].path.empty());
 }
 
+TEST(Layout, TakesALineBreakInEveryFormItCanArriveIn)
+{
+  using avatar_challenge::normalizeLineBreaks;
+  EXPECT_EQ(normalizeLineBreaks("A\nB"), "A\nB");        // already a newline
+  EXPECT_EQ(normalizeLineBreaks("A\\nB"), "A\nB");       // literal backslash-n
+  EXPECT_EQ(normalizeLineBreaks("A\r\nB"), "A\nB");      // CRLF is one break
+  EXPECT_EQ(normalizeLineBreaks("A\rB"), "A\nB");        // bare CR
+  EXPECT_EQ(normalizeLineBreaks("A\\tB"), "A\\tB");      // other escapes are text
+  EXPECT_EQ(normalizeLineBreaks("AnB"), "AnB");          // an n is a letter
+
+  WritingArea area;
+  area.u_min = 0.0;
+  area.u_max = 0.50;
+  area.v_min = 0.0;
+  area.v_max = 0.60;
+
+  // What a quoted \n on the command line actually puts on the wire.
+  const TextLayout escaped = layoutText("AVATAR\\nROBOTICS", font(), options(0.05, area));
+  EXPECT_EQ(escaped.lines, 2u);
+  EXPECT_EQ(escaped.glyphs.size(), 14u);
+  EXPECT_TRUE(escaped.unknown.empty());
+  EXPECT_EQ(escaped.glyphs[6].line, 1u);
+
+  // The same text with a real newline lays out identically.
+  const TextLayout real = layoutText("AVATAR\nROBOTICS", font(), options(0.05, area));
+  ASSERT_EQ(real.glyphs.size(), escaped.glyphs.size());
+  for (std::size_t i = 0; i < real.glyphs.size(); ++i) {
+    EXPECT_EQ(real.glyphs[i].character, escaped.glyphs[i].character);
+    EXPECT_NEAR(real.glyphs[i].u, escaped.glyphs[i].u, 1e-12);
+    EXPECT_NEAR(real.glyphs[i].v, escaped.glyphs[i].v, 1e-12);
+  }
+
+  // A shell that ate the backslash leaves a letter behind, not a break: the
+  // layout must draw the n and must not try to be clever about it. Given room
+  // for all fifteen letters, that is one line -- in a narrower area they wrap,
+  // which is what makes the mistake look like a line break that ran late.
+  WritingArea roomy = area;
+  roomy.u_max = 1.0;
+  const TextLayout eaten = layoutText("AVATARnROBOTICS", font(), options(0.05, roomy));
+  EXPECT_EQ(eaten.glyphs.size(), 15u);
+  EXPECT_EQ(eaten.lines, 1u);
+  EXPECT_EQ(eaten.glyphs[6].character, 'n');
+}
+
 TEST(Layout, ReportsUnknownCharactersInsteadOfDrawingThem)
 {
   WritingArea area;

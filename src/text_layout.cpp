@@ -28,7 +28,7 @@ std::vector<Item> tokenize(const std::string & text, const Alphabet & alphabet, 
   std::vector<Item> items;
   items.reserve(text.size());
   for (const char character : text) {
-    if (character == '\n' || character == '\r') {
+    if (character == '\n') {
       items.push_back(Item{Item::Kind::kNewline, nullptr, character});
       continue;
     }
@@ -48,6 +48,28 @@ std::vector<Item> tokenize(const std::string & text, const Alphabet & alphabet, 
 
 }  // namespace
 
+std::string normalizeLineBreaks(const std::string & text)
+{
+  std::string out;
+  out.reserve(text.size());
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if (text[i] == '\\' && i + 1 < text.size() && text[i + 1] == 'n') {
+      out.push_back('\n');
+      ++i;
+      continue;
+    }
+    if (text[i] == '\r') {
+      out.push_back('\n');
+      if (i + 1 < text.size() && text[i + 1] == '\n') {
+        ++i;   // CRLF is one break, not two
+      }
+      continue;
+    }
+    out.push_back(text[i]);
+  }
+  return out;
+}
+
 TextLayout layoutText(
   const std::string & text, const Alphabet & alphabet, const LayoutOptions & options)
 {
@@ -62,7 +84,8 @@ TextLayout layoutText(
   layout.line_spacing = options.line_spacing >= 0.0 ?
     options.line_spacing : metrics.line_spacing * scale;
 
-  const std::vector<Item> items = tokenize(text, alphabet, layout.unknown);
+  const std::vector<Item> items =
+    tokenize(normalizeLineBreaks(text), alphabet, layout.unknown);
   const WritingArea & area = options.area;
 
   // A line fits while its baseline leaves room for the font's descender above
